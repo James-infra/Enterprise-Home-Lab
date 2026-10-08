@@ -4,7 +4,7 @@
 
 This guided home-lab project implements Windows DHCP across segmented VMware networks using pfSense relay, then validates computer and user Group Policy on a domain-joined client. This is lab experience, separate from production administration.
 
-**Status:** DHCP lease assignment, both GPO behaviours, and a disabled-link recovery exercise verified on October 7–8, 2026.
+**Status:** DHCP lease assignment, both GPO behaviours, disabled-link recovery, and GPO backup restoration verified on October 7–8, 2026.
 
 ## Environment
 
@@ -208,6 +208,90 @@ This policy demonstrates user-scoped enforcement. Blocking Run is not a complete
 
 The GPO continued to exist while its link was disabled. Successful policy processing did not mean that this particular GPO applied. Security settings can persist after a GPO stops applying; the exercise verified application with `gpresult`, not disappearance of the registry value.
 
+## Recovery exercise: GPO backup and restore
+
+On October 8, 2026, both lab GPOs were backed up. The user GPO was then changed temporarily and restored from backup to test recovery of its settings.
+
+### Back up the working policies
+
+On DC01, in elevated PowerShell:
+
+```powershell
+New-Item -Path "C:\LabBackups\GPO" -ItemType Directory -Force
+
+Backup-GPO -Name "Workstation - Inactivity Lock" -Path "C:\LabBackups\GPO"
+Backup-GPO -Name "LAB - Users - Remove Run" -Path "C:\LabBackups\GPO"
+
+Get-ChildItem "C:\LabBackups\GPO" -Directory
+```
+
+Backup completion was reported by the user. An external copy of the backup folder was recommended but has not been confirmed. GPO backups do not preserve the OU links; record those separately.
+
+### Introduce a controlled change
+
+The exercise temporarily allowed Run for users targeted by the Lab Users OU link. Only the user GPO setting was changed; the inactivity-lock policy was not part of this restore test.
+
+On DC01:
+
+```powershell
+Set-GPRegistryValue `
+    -Name "LAB - Users - Remove Run" `
+    -Key "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
+    -ValueName "NoRun" -Type DWord -Value 0
+```
+
+On CL01, as the test user:
+
+```powershell
+gpupdate /target:user /force
+```
+
+The procedure included saving open work and signing out/in before testing Run. The 16:43:43 screenshot showed a successful user policy refresh and an open Run dialog, confirming the temporary behaviour.
+
+### Restore the backed-up settings
+
+Restoration replaces the GPO's settings with the selected backup. No unrelated edits should be made to that GPO during the test.
+
+On DC01:
+
+```powershell
+Restore-GPO `
+    -Name "LAB - Users - Remove Run" `
+    -Path "C:\LabBackups\GPO"
+```
+
+The command returned the restored GPO with the following properties:
+
+| Property | Observed result |
+|---|---|
+| DisplayName | `LAB - Users - Remove Run` |
+| DomainName | `home.lab.morpheus` |
+| GpoStatus | `AllSettingsEnabled` |
+| ModificationTime | October 8, 2026, 16:44:27 |
+| UserVersion | AD Version: 7; SYSVOL Version: 7 |
+| ComputerVersion | AD Version: 3; SYSVOL Version: 3 |
+
+The reported AD and SYSVOL version numbers matched for both policy sections. This observation is not a multi-domain-controller replication test.
+
+### Verify client recovery
+
+After restoration, the client procedure was to refresh user policy and sign out/in again:
+
+```powershell
+gpupdate /target:user /force
+```
+
+The 16:45:32 screenshot showed a restrictions message when attempting to open Run, confirming the restriction returned.
+
+| Stage | Verified outcome |
+|---|---|
+| Backup | User reported backing up the GPOs |
+| Temporary change | Run opened after user policy refresh |
+| Restore | `Restore-GPO` returned the intended GPO |
+| Client verification | Run was blocked again |
+
+**Recovery result:** the user GPO's restriction was recovered from backup and verified through client behaviour. The existing GPO and OU link were retained; this was not a deleted-GPO recovery exercise.
+
 ## Final server-side checks
 
 ```powershell
@@ -231,9 +315,9 @@ Both links returned `Enabled=True`:
 - DHCP shares DC01 with AD DS and DNS to fit the small lab; no DHCP failover or additional domain controller was tested.
 - The lock setting is a single control, not a complete workstation security baseline.
 - The disabled-link exercise was intentional and was restored.
-- No backup/restore validation, scale testing, or production deployment is claimed.
+- Backup restoration was validated for the user GPO only; the computer GPO backup was not restore-tested. No scale testing or production deployment is claimed.
 - Creation commands are a record of the completed setup, not an idempotent script: do not rerun them against existing scopes or GPOs without checking first.
 
 ## Skills demonstrated
 
-Windows DHCP installation and AD authorization; scope and option configuration; DHCP relay across subnets; client/server lease validation; OU-based computer and user policy targeting; effective-setting verification; and evidence-led troubleshooting with the smallest corrective change.
+Windows DHCP installation and AD authorization; scope and option configuration; DHCP relay across subnets; client/server lease validation; OU-based computer and user policy targeting; effective-setting verification; GPO backup and restoration; and evidence-led troubleshooting with the smallest corrective change.
